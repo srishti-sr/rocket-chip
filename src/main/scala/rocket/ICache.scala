@@ -25,12 +25,6 @@ import chisel3.util.random.LFSR
   * @param nTLBWays TLB ways
   * @param nTLBBasePageSectors TLB BasePageSectors
   * @param nTLBSuperpages TLB Superpages
-  * @param tagECC tag ECC, will be parsed to [[freechips.rocketchip.util.Code]].
-  * @param dataECC data ECC, will be parsed to [[freechips.rocketchip.util.Code]].
-  * @param itimAddr optional base ITIM address,
-  *                 if None, ITIM won't be generated,
-  *                 if Some, ITIM will be generated, with itimAddr as ITIM base address.
-  * @param prefetch if set, will send next-line[[TLEdgeOut.Hint]] to manger.
   * @param blockBytes size of a cacheline, calculates in byte.
   * @param latency latency of a instruction fetch, 1 or 2 are available
   * @param fetchBytes byte size fetched by CPU for each cycle.
@@ -44,15 +38,9 @@ case class ICacheParams(
     nTLBBasePageSectors: Int = 4,
     nTLBSuperpages: Int = 4,
     cacheIdBits: Int = 0,
-    tagECC: Option[String] = None,
-    dataECC: Option[String] = None,
-    itimAddr: Option[BigInt] = None,
-    prefetch: Boolean = false,
     blockBytes: Int = 64,
     latency: Int = 2,
     fetchBytes: Int = 4) extends L1CacheParams {
-  def tagCode: Code = Code.fromString(tagECC)
-  def dataCode: Code = Code.fromString(dataECC)
   def replacement = new RandomReplacement(nWays)
 }
 
@@ -62,63 +50,8 @@ trait HasL1ICacheParameters extends HasL1CacheParameters with HasCoreParameters 
 
 class ICacheReq(implicit p: Parameters) extends CoreBundle()(p) with HasL1ICacheParameters {
   val addr = UInt(vaddrBits.W)
+ val bus = Valid(UInt(paddrBits.W))
 }
-
-class ICacheErrors(implicit p: Parameters) extends CoreBundle()(p)
-    with HasL1ICacheParameters
-    with CanHaveErrors {
-  val correctable = (cacheParams.tagCode.canDetect || cacheParams.dataCode.canDetect).option(Valid(UInt(paddrBits.W)))
-  val uncorrectable = (cacheParams.itimAddr.nonEmpty && cacheParams.dataCode.canDetect).option(Valid(UInt(paddrBits.W)))
-  val bus = Valid(UInt(paddrBits.W))
-}
-
-/** [[ICache]] is a set associated cache I$(Instruction Cache) of Rocket.
- * {{{
-  * Keywords: Set-associated
-  *           3 stage pipeline
-  *           Virtually-Indexed Physically-Tagged (VIPT)
-  *           Parallel access to tag and data SRAM
-  *           Random replacement algorithm
-  * Optional Features:
-  *           Prefetch
-  *           ECC
-  *           Instruction Tightly Integrated Memory(ITIM)}}}
-  *{{{
-  * PipeLine:
-  *   Stage 0 : access data and tag SRAM in parallel
-  *   Stage 1 : receive paddr from CPU
-  *             compare tag and paddr when the entry is valid
-  *             if hit : pick up the target instruction
-  *             if miss : start refilling in stage 2
-  *   Stage 2 : respond to CPU or start a refill}}}
-  *{{{
-  * Note: Page size = 4KB thus paddr[11:0] = vaddr[11:0]
-  *       considering sets = 64, cachelineBytes =64
-  *       use vaddr[11:6] to access tag_array
-  *       use vaddr[11:2] to access data_array}}}
-  *{{{
-  * ITIM:
-  * │          tag         │    set    │offset│
-  *                    ├way┘                    → indicate way location
-  *                    │    line       │ }}}
-  *   if `way` == b11 (last way), deallocate
-  *   if write to ITIM all I$ will be invalidate
-  *
-  * The optional dynamic configurable ITIM sharing SRAM with I$ is set by  [[icacheParams.itimAddr]].
-  * if PutFullData/PutPartialData to the ITIM address, it will dynamically allocate base address to the address of this accessing from SRAM.
-  * if access to last way of ITIM, it set will change back to I$.
-  *
-  * If ITIM is configured:
-  *   set: if address to access is not to be configured to ITIM yet,
-  *        a memory accessing to ITIM address range will modify `scratchpadMax`,
-  *        from ITIM base to `scratchpadMax` will be used as ITIM.
-  *   unset: @todo
-  *
-  * There will always be one way(the last way) used for I$, which cannot be allocated to ITIM.
-  *
-  * @param icacheParams parameter to this I$.
-  * @param staticIdForMetadataUseOnly metadata used for hart id.
-  */
 class ICache(val icacheParams: ICacheParams, val staticIdForMetadataUseOnly: Int)(implicit p: Parameters) extends LazyModule {
   lazy val module = new ICacheModule(this)
 
