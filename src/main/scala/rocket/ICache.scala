@@ -29,8 +29,6 @@ case class ICacheParams(
     blockBytes: Int = 64,
     latency: Int = 2,
     fetchBytes: Int = 4) extends L1CacheParams {
-  def tagCode: Code = Code.fromString(tagECC)
-  def dataCode: Code = Code.fromString(dataECC)
   def replacement = new RandomReplacement(nWays)
 }
 trait HasL1ICacheParameters extends HasL1CacheParameters with HasCoreParameters {
@@ -39,17 +37,8 @@ trait HasL1ICacheParameters extends HasL1CacheParameters with HasCoreParameters 
 class ICacheReq(implicit p: Parameters) extends CoreBundle()(p) with HasL1ICacheParameters {
   val addr = UInt(vaddrBits.W)
 }
-class ICacheErrors(implicit p: Parameters) extends CoreBundle()(p)
-    with HasL1ICacheParameters
-    with CanHaveErrors {
-  val correctable = (cacheParams.tagCode.canDetect || cacheParams.dataCode.canDetect).option(Valid(UInt(paddrBits.W)))
-  val uncorrectable = (cacheParams.itimAddr.nonEmpty && cacheParams.dataCode.canDetect).option(Valid(UInt(paddrBits.W)))
-  val bus = Valid(UInt(paddrBits.W))
-}
 class ICache(val icacheParams: ICacheParams, val staticIdForMetadataUseOnly: Int)(implicit p: Parameters) extends LazyModule {
   lazy val module = new ICacheModule(this)
-  val hartIdSinkNodeOpt = icacheParams.itimAddr.map(_ => BundleBridgeSink[UInt]())
-  val mmioAddressPrefixSinkNodeOpt = icacheParams.itimAddr.map(_ => BundleBridgeSink[UInt]())
   val useVM = p(TileKey).core.useVM
   val masterNode = TLClientNode(Seq(TLMasterPortParameters.v1(
     clients = Seq(TLMasterParameters.v1(
@@ -73,7 +62,6 @@ class ICache(val icacheParams: ICacheParams, val staticIdForMetadataUseOnly: Int
     }
   }
 
-  def itimProperty: Option[Seq[ResourceValue]] = icacheParams.itimAddr.map(_ => device.asProperty)
 
   /** @todo why [[wordBytes]] is defined by [[icacheParams.fetchBytes]], rather than 32 directly? */
   private val wordBytes = icacheParams.fetchBytes
