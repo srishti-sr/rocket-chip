@@ -37,6 +37,7 @@ trait HasL1ICacheParameters extends HasL1CacheParameters with HasCoreParameters 
 class ICacheReq(implicit p: Parameters) extends CoreBundle()(p) with HasL1ICacheParameters {
   val addr = UInt(vaddrBits.W)             //addressbits
 }
+
 class ICache(val icacheParams: ICacheParams, val staticIdForMetadataUseOnly: Int)(implicit p: Parameters) extends LazyModule {
   lazy val module = new ICacheModule(this)//use later
     /** Diplomatic hartid bundle used for ITIM.  */
@@ -98,14 +99,15 @@ class ICachePerfEvents extends Bundle { //performance counting
 class ICacheBundle(val outer: ICache) extends CoreBundle()(outer.p) { //core bundle parameters are available
   /** first cycle requested from CPU. */
   val req = Flipped(Decoupled(new ICacheReq)) //flip the direction of request from cpu to icache,Input port for instruction cache requests from the CPU.
-  val s1_paddr = Input(UInt(paddrBits.W)) // delayed one cycle w.r.t. req
-  val s2_vaddr = Input(UInt(vaddrBits.W)) // delayed two cycles w.r.t. req
+  val s1_paddr = Input(UInt(paddrBits.W)) // delayed one cycle w.r.t. req ,first stage of pipeline
+  val s2_vaddr = Input(UInt(vaddrBits.W)) // delayed two cycles w.r.t. req, second stage of pipeline
   val s1_kill = Input(Bool()) // delayed one cycle w.r.t. req,killing the request
   val s2_kill = Input(Bool()) // delayed two cycles; prevents I$ miss emission
-  val s2_cacheable = Input(Bool()) // Boolean indicating if a miss should be cached by the L2 cache
+  val s2_cacheable = Input(Bool()) /** Boolean indicating if a miss should be cached by the L2 cache.s an input signal indicating whether the corresponding instruction is cacheable at the L2 cache level.
+It influences the caching behavior.**/
   val s2_prefetch = Input(Bool()) // should I$ prefetch next line on a miss?
   val resp = Valid(new ICacheResp(outer))
-  val invalidate = Input(Bool())
+  val invalidate = Input(Bool()) //flush l1 cache of cpu
   //val errors = new ICacheErrors
   val perf = Output(new ICachePerfEvents())//performance counting??
   val clock_enabled = Input(Bool())  /** enable clock. */
