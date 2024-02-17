@@ -38,17 +38,25 @@ class ICacheReq(implicit p: Parameters) extends CoreBundle()(p) with HasL1ICache
   val addr = UInt(vaddrBits.W)             //addressbits
 }
 class ICache(val icacheParams: ICacheParams, val staticIdForMetadataUseOnly: Int)(implicit p: Parameters) extends LazyModule {
-  lazy val module = new ICacheModule(this)
-  val useVM = p(TileKey).core.useVM
-  val masterNode = TLClientNode(Seq(TLMasterPortParameters.v1(
+  lazy val module = new ICacheModule(this)//use later
+    /** Diplomatic hartid bundle used for ITIM.  */
+  val hartIdSinkNodeOpt = icacheParams.itimAddr.map(_ => BundleBridgeSink[UInt]()) //why??
+  /** @todo base address offset for ITIM? */
+  val mmioAddressPrefixSinkNodeOpt = icacheParams.itimAddr.map(_ => BundleBridgeSink[UInt]()) //why??
+
+  val useVM = p(TileKey).core.useVM   //use of virtual memory
+    
+  val masterNode = TLClientNode(Seq(TLMasterPortParameters.v1(      //tile link
     clients = Seq(TLMasterParameters.v1(
       sourceId = IdRange(0, 1 + icacheParams.prefetch.toInt), // 0=refill, 1=hint
-      name = s"Core ${staticIdForMetadataUseOnly} ICache")),
-    requestFields = useVM.option(Seq()).getOrElse(Seq(AMBAProtField())))))
-  val size = icacheParams.nSets * icacheParams.nWays * icacheParams.blockBytes
-  val itim_control_offset = size - icacheParams.nSets * icacheParams.blockBytes
+      name = s"Core ${staticIdForMetadataUseOnly} ICache")), //what will come here??
+    requestFields = useVM.option(Seq()).getOrElse(Seq(AMBAProtField())))))   //based on use of virtual memory
+    
+  val size = icacheParams.nSets * icacheParams.nWays * icacheParams.blockBytes  //size of cache
+    
+  //val itim_control_offset = size - icacheParams.nSets * icacheParams.blockBytes
 
-  val device = new SimpleDevice("itim", Seq("sifive,itim0")) {
+  val device = new SimpleDevice("itim", Seq("sifive,itim0")) { 
     override def describe(resources: ResourceBindings): Description = {
      val Description(name, mapping) = super.describe(resources)
      val Seq(Binding(_, ResourceAddress(address, perms))) = resources("reg/mem")
@@ -65,7 +73,7 @@ class ICache(val icacheParams: ICacheParams, val staticIdForMetadataUseOnly: Int
   private val wordBytes = icacheParams.fetchBytes
   /** Instruction Tightly Integrated Memory node. */
   val slaveNode =
-    TLManagerNode(icacheParams.itimAddr.toSeq.map { itimAddr => TLSlavePortParameters.v1(
+    TLManagerNode(icacheParams.itimAddr.toSeq.map { itimAddr => TLSlavePortParameters.v1( //tile link //how to do this without itim ??
       Seq(TLSlaveParameters.v1(
         address         = Seq(AddressSet(itimAddr, size-1)),
         resources       = device.reg("mem"),
@@ -79,26 +87,28 @@ class ICache(val icacheParams: ICacheParams, val staticIdForMetadataUseOnly: Int
       minLatency = 1)})
 }
 class ICacheResp(outer: ICache) extends Bundle {
-  val data = UInt((outer.icacheParams.fetchBytes*8).W)
-  val replay = Bool()
-  val ae = Bool()
+  val data = UInt((outer.icacheParams.fetchBytes*8).W) //data to CPU
+  val replay = False //used in case of tag error original Bool()
+  val ae = Bool() //use??
 }
-class ICachePerfEvents extends Bundle {
-  val acquire = Bool()
+class ICachePerfEvents extends Bundle { //performance counting
+  val acquire = Bool() //cache aquires a cache line
 }
-class ICacheBundle(val outer: ICache) extends CoreBundle()(outer.p) {
+//IO from CPU To Icache
+class ICacheBundle(val outer: ICache) extends CoreBundle()(outer.p) { //core bundle parameters are available
   val req = Flipped(Decoupled(new ICacheReq))
-  val s1_paddr = Input(UInt(paddrBits.W)) 
-  val s2_vaddr = Input(UInt(vaddrBits.W)) 
-  val s1_kill = Input(Bool()) 
+  val s1_paddr = Input(UInt(paddrBits.W)) // delayed one cycle w.r.t. req
+  val s2_vaddr = Input(UInt(vaddrBits.W)) // delayed two cycles w.r.t. req
+  val s1_kill = Input(Bool()) // delayed one cycle w.r.t. req
   val s2_kill = Input(Bool()) // delayed two cycles; prevents I$ miss emission
   val s2_cacheable = Input(Bool()) // should L2 cache line on a miss?
   val s2_prefetch = Input(Bool()) // should I$ prefetch next line on a miss?
   val resp = Valid(new ICacheResp(outer))
   val invalidate = Input(Bool())
-  val errors = new ICacheErrors
-  val perf = Output(new ICachePerfEvents())
-  val clock_enabled = Input(Bool())
+  //val errors = new ICacheErrors
+  val perf = Output(new ICachePerfEvents())//performance counting??
+  val clock_enabled = Input(Bool())  /** enable clock. */
+  /** I$ miss or ITIM access will still enable clock even [[ICache]] is asked to be gated. */
   val keep_clock_enabled = Output(Bool())
 }
 class ICacheModule(outer: ICache) extends LazyModuleImp(outer)
@@ -107,14 +117,14 @@ class ICacheModule(outer: ICache) extends LazyModuleImp(outer)
   val io = IO(new ICacheBundle(outer))
   val (tl_out, edge_out) = outer.masterNode.out(0)
   val (tl_in, edge_in) = outer.slaveNode.in.headOption.unzip
-  val tECC = cacheParams.tagCode
-  val dECC = cacheParams.dataCode
+  //val tECC = cacheParams.tagCode
+  //val dECC = cacheParams.dataCode
   require(isPow2(nSets) && isPow2(nWays))
   require(!usingVM || outer.icacheParams.itimAddr.isEmpty || pgIdxBits >= untagBits,
     s"When VM and ITIM are enabled, I$$ set size must not exceed ${1<<(pgIdxBits-10)} KiB; got ${(outer.size/nWays)>>10} KiB")
   val io_hartid = outer.hartIdSinkNodeOpt.map(_.bundle)
   val io_mmio_address_prefix = outer.mmioAddressPrefixSinkNodeOpt.map(_.bundle)
-  val scratchpadOn = RegInit(false.B)
+  /*val scratchpadOn = RegInit(false.B)                what to do with scartchpad?
   val scratchpadMax = tl_in.map(tl => Reg(UInt(log2Ceil(nSets * (nWays - 1)).W)))
   def lineInScratchpad(line: UInt) = scratchpadMax.map(scratchpadOn && line <= _).getOrElse(false.B)
   val scratchpadBase = outer.icacheParams.itimAddr.map { dummy =>
@@ -124,7 +134,7 @@ class ICacheModule(outer: ICache) extends LazyModuleImp(outer)
   def addrInScratchpad(addr: UInt) = addrMaybeInScratchpad(addr) && lineInScratchpad(addr(untagBits+log2Ceil(nWays)-1, blockOffBits))
   def scratchpadWay(addr: UInt) = addr.extract(untagBits+log2Ceil(nWays)-1, untagBits)
   def scratchpadWayValid(way: UInt) = way < (nWays - 1).U
-  def scratchpadLine(addr: UInt) = addr(untagBits+log2Ceil(nWays)-1, blockOffBits)
+  def scratchpadLine(addr: UInt) = addr(untagBits+log2Ceil(nWays)-1, blockOffBits)*/
   val s0_slaveValid = tl_in.map(_.a.fire).getOrElse(false.B)
   val s1_slaveValid = RegNext(s0_slaveValid, false.B)
   val s2_slaveValid = RegNext(s1_slaveValid, false.B)
