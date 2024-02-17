@@ -32,10 +32,10 @@ case class ICacheParams(
   def replacement = new RandomReplacement(nWays)
 }
 trait HasL1ICacheParameters extends HasL1CacheParameters with HasCoreParameters {
-  val cacheParams = tileParams.icache.get
+  val cacheParams = tileParams.icache.get   //L1 cache,base tile,core parameters
 }
 class ICacheReq(implicit p: Parameters) extends CoreBundle()(p) with HasL1ICacheParameters {
-  val addr = UInt(vaddrBits.W)
+  val addr = UInt(vaddrBits.W)             //addressbits
 }
 class ICache(val icacheParams: ICacheParams, val staticIdForMetadataUseOnly: Int)(implicit p: Parameters) extends LazyModule {
   lazy val module = new ICacheModule(this)
@@ -61,11 +61,8 @@ class ICache(val icacheParams: ICacheParams, val staticIdForMetadataUseOnly: Int
      Description(name, mapping ++ extra)
     }
   }
-
-
   /** @todo why [[wordBytes]] is defined by [[icacheParams.fetchBytes]], rather than 32 directly? */
   private val wordBytes = icacheParams.fetchBytes
-
   /** Instruction Tightly Integrated Memory node. */
   val slaveNode =
     TLManagerNode(icacheParams.itimAddr.toSeq.map { itimAddr => TLSlavePortParameters.v1(
@@ -276,8 +273,8 @@ class ICacheModule(outer: ICache) extends LazyModuleImp(outer)
       io.resp.bits.ae := s1_tl_error.asUInt.orR
       io.resp.valid := s1_valid && s1_hit
       io.resp.bits.replay := false.B
-    case 2 =>
-      when (s2_valid && s2_disparity) { invalidate := true.B }
+      case 2 =>
+     /* when (s2_valid && s2_disparity) { invalidate := true.B }
       io.resp.bits.data := s2_data_decoded.uncorrected
       io.resp.bits.ae := s2_tl_error
       io.resp.bits.replay := s2_disparity
@@ -344,41 +341,14 @@ class ICacheModule(outer: ICache) extends LazyModuleImp(outer)
         ccover(s0_valid && s2_slaveValid, "CONCURRENT_ITIM_ACCESS_2", "ITIM accessed, then I$ accessed two cycles later")
         ccover(tl.d.valid && !tl.d.ready, "ITIM_D_STALL", "ITIM response blocked by D-channel")
         ccover(tl_out.d.valid && !tl_out.d.ready, "ITIM_BLOCK_D", "D-channel blocked by ITIM access")
-      }
+      }*/
   }
   tl_out.a.valid := s2_request_refill
   tl_out.a.bits := edge_out.Get(
                     fromSource = 0.U,
                     toAddress = (refill_paddr >> blockOffBits) << blockOffBits,
                     lgSize = lgCacheBlockBytes.U)._2
-  if (cacheParams.prefetch) {
-    val (crosses_page, next_block) = Split(refill_paddr(pgIdxBits-1, blockOffBits) +& 1.U, pgIdxBits-blockOffBits)
-    when (tl_out.a.fire) {
-      send_hint := !hint_outstanding && io.s2_prefetch && !crosses_page
-      when (send_hint) {
-        send_hint := false.B
-        hint_outstanding := true.B
-      }
-    }
-    when (refill_done) {
-      send_hint := false.B
-    }
-    when (tl_out.d.fire && !refill_one_beat) {
-      hint_outstanding := false.B
-    }
-    when (send_hint) {
-      tl_out.a.valid := true.B
-      tl_out.a.bits := edge_out.Hint(
-                        fromSource = 1.U,
-                        toAddress = Cat(refill_paddr >> pgIdxBits, next_block) << blockOffBits,
-                        lgSize = lgCacheBlockBytes.U,
-                        param = TLHints.PREFETCH_READ)._2
-    }
-    ccover(send_hint && !tl_out.a.ready, "PREFETCH_A_STALL", "I$ prefetch blocked by A-channel")
-    ccover(refill_valid && (tl_out.d.fire && !refill_one_beat), "PREFETCH_D_BEFORE_MISS_D", "I$ prefetch resolves before miss")
-    ccover(!refill_valid && (tl_out.d.fire && !refill_one_beat), "PREFETCH_D_AFTER_MISS_D", "I$ prefetch resolves after miss")
-    ccover(tl_out.a.fire && hint_outstanding, "PREFETCH_D_AFTER_MISS_A", "I$ prefetch resolves after second miss")
-  }
+  
   tl_out.a.bits.user.lift(AMBAProt).foreach { x =>
     x.fetch       := true.B
     x.secure      := true.B
