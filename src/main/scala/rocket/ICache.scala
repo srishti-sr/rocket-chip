@@ -104,7 +104,7 @@ class ICacheBundle(val outer: ICache) extends CoreBundle()(outer.p) { //core bun
   val s1_kill = Input(Bool()) // delayed one cycle w.r.t. req,killing the request
   val s2_kill = Input(Bool()) // delayed two cycles; prevents I$ miss emission
   val s2_cacheable = Input(Bool()) /** Boolean indicating if a miss should be cached by the L2 cache.s an input signal indicating whether the corresponding instruction is cacheable at the L2 cache level.
-It influences the caching behavior.**/
+It influences the caching behavior.,Flag indicating if a miss should be cached in the L2 cache, determined after processing in the second stage.**/
   val s2_prefetch = Input(Bool()) // should I$ prefetch next line on a miss?
   val resp = Valid(new ICacheResp(outer))
   val invalidate = Input(Bool()) //flush l1 cache of cpu
