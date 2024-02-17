@@ -96,12 +96,13 @@ class ICachePerfEvents extends Bundle { //performance counting
 }
 //IO from CPU To Icache
 class ICacheBundle(val outer: ICache) extends CoreBundle()(outer.p) { //core bundle parameters are available
-  val req = Flipped(Decoupled(new ICacheReq))
+  /** first cycle requested from CPU. */
+  val req = Flipped(Decoupled(new ICacheReq)) //flip the direction of request from cpu to icache,Input port for instruction cache requests from the CPU.
   val s1_paddr = Input(UInt(paddrBits.W)) // delayed one cycle w.r.t. req
   val s2_vaddr = Input(UInt(vaddrBits.W)) // delayed two cycles w.r.t. req
-  val s1_kill = Input(Bool()) // delayed one cycle w.r.t. req
+  val s1_kill = Input(Bool()) // delayed one cycle w.r.t. req,killing the request
   val s2_kill = Input(Bool()) // delayed two cycles; prevents I$ miss emission
-  val s2_cacheable = Input(Bool()) // should L2 cache line on a miss?
+  val s2_cacheable = Input(Bool()) // Boolean indicating if a miss should be cached by the L2 cache
   val s2_prefetch = Input(Bool()) // should I$ prefetch next line on a miss?
   val resp = Valid(new ICacheResp(outer))
   val invalidate = Input(Bool())
