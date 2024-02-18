@@ -212,7 +212,7 @@ refill_cnt: An integer representing the current refill count.**/
     var v = v0
     for (i <- log2Ceil(nWays) - 1 to 0 by -1) {
       val mask = nWays - (BigInt(1) << (i + 1))
-      v = v | 1 << i)
+      v = v | 1 << i
     }
     v
   }
@@ -223,7 +223,7 @@ refill_cnt: An integer representing the current refill count.**/
     name = "tag_array",
     desc = "ICache Tag Array",
     size = nSets,
-    data = Vec(nWays, UInt(tECC.width(1 + tagBits).W))
+    data = Vec(nWays, UInt((tagBits).W))//changed
   )
   val tag_rdata = tag_array.read(s0_vaddr(untagBits-1,blockOffBits), !refill_done && s0_valid)
   /*val accruedRefillError = Reg(Bool())
@@ -246,31 +246,34 @@ refill_cnt: An integer representing the current refill count.**/
     vb_array := 0.U
     invalidated := true.B
   }
-  val s1_tag_disparity = Wire(Vec(nWays, Bool()))
-  val s1_tl_error = Wire(Vec(nWays, Bool()))
+  //val s1_tag_disparity = Wire(Vec(nWays, Bool()))
+  //val s1_tl_error = Wire(Vec(nWays, Bool()))
+     
   val wordBits = outer.icacheParams.fetchBytes*8
-  val s1_dout = Wire(Vec(nWays, UInt(dECC.width(wordBits).W)))
+  val s1_dout = Wire(Vec(nWays, UInt(wordBits).W)))
   s1_dout := DontCare
+     
   val s0_slaveAddr = tl_in.map(_.a.bits.address).getOrElse(0.U)
   val s1s3_slaveAddr = Reg(UInt(log2Ceil(outer.size).W))
   val s1s3_slaveData = Reg(UInt(wordBits.W))
   for (i <- 0 until nWays) {
     val s1_idx = index(s1_vaddr, io.s1_paddr)
     val s1_tag = io.s1_paddr >> pgUntagBits
-    val scratchpadHit = scratchpadWayValid(i.U) &&
+    /**val scratchpadHit = scratchpadWayValid(i.U) &&
       Mux(s1_slaveValid,
         lineInScratchpad(scratchpadLine(s1s3_slaveAddr)) && scratchpadWay(s1s3_slaveAddr) === i.U,
-        addrInScratchpad(io.s1_paddr) && scratchpadWay(io.s1_paddr) === i.U)
-    val s1_vb = vb_array(Cat(i.U, s1_idx)) && !s1_slaveValid
-    val enc_tag = tECC.decode(tag_rdata(i))
-    val (tl_error, tag) = Split(enc_tag.uncorrected, tagBits)
+        addrInScratchpad(io.s1_paddr) && scratchpadWay(io.s1_paddr) === i.U)**/
+    val s1_vb = vb_array(Cat(i.U, s1_idx))
+    /**val enc_tag = tECC.decode(tag_rdata(i))
+    val (tl_error, tag) = Split(enc_tag.uncorrected, tagBits)**/
     val tagMatch = s1_vb && tag === s1_tag
-    s1_tag_disparity(i) := s1_vb && enc_tag.error
-    s1_tl_error(i) := tagMatch && tl_error.asBool
-    s1_tag_hit(i) := tagMatch || scratchpadHit
+    /**s1_tag_disparity(i) := s1_vb && enc_tag.error
+    s1_tl_error(i) := tagMatch && tl_error.asBool?**/
+    s1_tag_hit(i) := tagMatch
   }
-  assert(!(s1_valid || s1_slaveValid) || PopCount(s1_tag_hit zip s1_tag_disparity map { case (h, d) => h && !d }) <= 1.U)
+  assert(!(s1_valid || s1_slaveValid) || PopCount(s1_tag_hit zip s1_tag_disparity map { case (h, d) => h && !d }) <= 1.U)//work on popcount
   require(tl_out.d.bits.data.getWidth % wordBits == 0)
+    /**Data SRAM**/
   val data_arrays = Seq.tabulate(tl_out.d.bits.data.getWidth / wordBits) {
     i =>
       DescribedSRAM(
@@ -320,7 +323,7 @@ refill_cnt: An integer representing the current refill count.**/
       require(dECC.isInstanceOf[IdentityCode])
       require(outer.icacheParams.itimAddr.isEmpty)
       io.resp.bits.data := Mux1H(s1_tag_hit, s1_dout)
-      io.resp.bits.ae := s1_tl_error.asUInt.orR
+      //io.resp.bits.ae := s1_tl_error.asUInt.orR
       io.resp.valid := s1_valid && s1_hit
       io.resp.bits.replay := false.B
   tl_out.a.valid := s2_request_refill
