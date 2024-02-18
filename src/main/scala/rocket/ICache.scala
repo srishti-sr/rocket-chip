@@ -34,7 +34,7 @@ case class ICacheParams(
     itimAddr: Option[BigInt] = None,
     prefetch: Boolean = false,
     blockBytes: Int = 64,
-    latency: Int = 2,
+    latency: Int = 1,
     fetchBytes: Int = 4) extends L1CacheParams {
   def replacement = new RandomReplacement(nWays)
 }
@@ -134,8 +134,8 @@ class ICacheModule(outer: ICache) extends LazyModuleImp(outer)
     */
   val (tl_in, edge_in) = outer.slaveNode.in.headOption.unzip /**val (tl_in, edge_in) = outer.slaveNode.in.headOption.map(_.unzip).getOrElse((None, None))**/
 //how to deal with this,in absence of itim??
-  //val tECC = cacheParams.tagCode
-  //val dECC = cacheParams.dataCode
+  val tECC = cacheParams.tagCode
+  val dECC = cacheParams.dataCode
   require(isPow2(nSets) && isPow2(nWays))
   require(!usingVM || outer.icacheParams.itimAddr.isEmpty || pgIdxBits >= untagBits,
     s"When VM and ITIM are enabled, I$$ set size must not exceed ${1<<(pgIdxBits-10)} KiB; got ${(outer.size/nWays)>>10} KiB")
@@ -316,8 +316,6 @@ refill_cnt: An integer representing the current refill count.**/
   val s2_scratchpad_hit = RegEnable(s1_scratchpad_hit, s1_clk_en)
   val s2_report_uncorrectable_error = s2_scratchpad_hit && s2_data_decoded.uncorrectable && (s2_valid || (s2_slaveValid && !s1s2_full_word_write))
   val s2_error_addr = scratchpadBase.map(base => Mux(s2_scratchpad_hit, base + s2_scratchpad_word_addr, 0.U)).getOrElse(0.U)
-  outer.icacheParams.latency match {
-    case 1 =>
       require(tECC.isInstanceOf[IdentityCode])
       require(dECC.isInstanceOf[IdentityCode])
       require(outer.icacheParams.itimAddr.isEmpty)
@@ -325,76 +323,6 @@ refill_cnt: An integer representing the current refill count.**/
       io.resp.bits.ae := s1_tl_error.asUInt.orR
       io.resp.valid := s1_valid && s1_hit
       io.resp.bits.replay := false.B
-      case 2 =>
-     /* when (s2_valid && s2_disparity) { invalidate := true.B }
-      io.resp.bits.data := s2_data_decoded.uncorrected
-      io.resp.bits.ae := s2_tl_error
-      io.resp.bits.replay := s2_disparity
-      io.resp.valid := s2_valid && s2_hit
-      io.errors.correctable.foreach { c =>
-        c.valid := (s2_valid || s2_slaveValid) && s2_disparity && !s2_report_uncorrectable_error
-        c.bits := s2_error_addr
-      }
-      io.errors.uncorrectable.foreach { u =>
-        u.valid := s2_report_uncorrectable_error
-        u.bits := s2_error_addr
-      }
-      tl_in.map { tl =>
-        val respValid = RegInit(false.B)
-        tl.a.ready := !(tl_out.d.valid || s1_slaveValid || s2_slaveValid || s3_slaveValid || respValid || !io.clock_enabled)
-        val s1_a = RegEnable(tl.a.bits, s0_slaveValid)
-        s1s2_full_word_write := edge_in.get.hasData(s1_a) && s1_a.mask.andR
-        when (s0_slaveValid) {
-          val a = tl.a.bits
-          s1s3_slaveAddr := tl.a.bits.address
-          s1s3_slaveData := tl.a.bits.data
-          when (edge_in.get.hasData(a)) {
-            val enable = scratchpadWayValid(scratchpadWay(a.address))
-            when (!lineInScratchpad(scratchpadLine(a.address))) {
-              scratchpadMax.get := scratchpadLine(a.address)
-              invalidate := true.B
-            }
-            scratchpadOn := enable
-            val itim_allocated = !scratchpadOn && enable
-            val itim_deallocated = scratchpadOn && !enable
-            val itim_increase = scratchpadOn && enable && scratchpadLine(a.address) > scratchpadMax.get
-            val refilling = refill_valid && refill_cnt > 0.U
-            ccover(itim_allocated, "ITIM_ALLOCATE", "ITIM allocated")
-            ccover(itim_allocated && refilling, "ITIM_ALLOCATE_WHILE_REFILL", "ITIM allocated while I$ refill")
-            ccover(itim_deallocated, "ITIM_DEALLOCATE", "ITIM deallocated")
-            ccover(itim_deallocated && refilling, "ITIM_DEALLOCATE_WHILE_REFILL", "ITIM deallocated while I$ refill")
-            ccover(itim_increase, "ITIM_SIZE_INCREASE", "ITIM size increased")
-            ccover(itim_increase && refilling, "ITIM_SIZE_INCREASE_WHILE_REFILL", "ITIM size increased while I$ refill")
-          }
-        }
-        assert(!s2_valid || RegNext(RegNext(s0_vaddr)) === io.s2_vaddr)
-        when (!(tl.a.valid || s1_slaveValid || s2_slaveValid || respValid)
-              && s2_valid && s2_data_decoded.error && !s2_tag_disparity) {
-          s3_slaveValid := true.B
-          s1s3_slaveData := s2_data_decoded.corrected
-          s1s3_slaveAddr := s2_scratchpad_word_addr | s1s3_slaveAddr(log2Ceil(wordBits/8)-1, 0)
-        }
-        respValid := s2_slaveValid || (respValid && !tl.d.ready) 
-        val respError = RegEnable(s2_scratchpad_hit && s2_data_decoded.uncorrectable && !s1s2_full_word_write, s2_slaveValid)
-        when (s2_slaveValid) {
-          when (edge_in.get.hasData(s1_a) || s2_data_decoded.error) { s3_slaveValid := true.B }
-          def byteEn(i: Int) = !(edge_in.get.hasData(s1_a) && s1_a.mask(i))
-          s1s3_slaveData := (0 until wordBits/8).map(i => Mux(byteEn(i), s2_data_decoded.corrected, s1s3_slaveData)(8*(i+1)-1, 8*i)).asUInt
-        }
-        tl.d.valid := respValid
-        tl.d.bits := Mux(edge_in.get.hasData(s1_a),
-          edge_in.get.AccessAck(s1_a),
-          edge_in.get.AccessAck(s1_a, 0.U, denied = false.B, corrupt = respError))
-        tl.d.bits.data := s1s3_slaveData
-        tl.b.valid := false.B
-        tl.c.ready := true.B
-        tl.e.ready := true.B
-        ccover(s0_valid && s1_slaveValid, "CONCURRENT_ITIM_ACCESS_1", "ITIM accessed, then I$ accessed next cycle")
-        ccover(s0_valid && s2_slaveValid, "CONCURRENT_ITIM_ACCESS_2", "ITIM accessed, then I$ accessed two cycles later")
-        ccover(tl.d.valid && !tl.d.ready, "ITIM_D_STALL", "ITIM response blocked by D-channel")
-        ccover(tl_out.d.valid && !tl_out.d.ready, "ITIM_BLOCK_D", "D-channel blocked by ITIM access")
-      }*/
-  }
   tl_out.a.valid := s2_request_refill
   tl_out.a.bits := edge_out.Get(
                     fromSource = 0.U,
@@ -419,7 +347,6 @@ refill_cnt: An integer representing the current refill count.**/
   when (refill_done) { refill_valid := false.B}
   io.perf.acquire := refill_fire
   io.keep_clock_enabled :=
-    tl_in.map(tl => tl.a.valid || tl.d.valid || s1_slaveValid || s2_slaveValid || s3_slaveValid).getOrElse(false.B) || // ITIM
     s1_valid || s2_valid || refill_valid || send_hint || hint_outstanding // I$
   def index(vaddr: UInt, paddr: UInt) = {
     val lsbs = paddr(pgUntagBits-1, blockOffBits)
