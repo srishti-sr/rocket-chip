@@ -300,9 +300,9 @@ refill_cnt: An integer representing the current refill count.**/
       s1_dout := dout
     }
   }
-  val s1s2_full_word_write = WireDefault(false.B)
+  /**val s1s2_full_word_write = WireDefault(false.B)
   val s1_dont_read = s1_slaveValid && s1s2_full_word_write
-  val s1_clk_en = s1_valid || s1_slaveValid
+  val s1_clk_en = s1_valid
   val s2_tag_hit = RegEnable(Mux(s1_dont_read, 0.U.asTypeOf(s1_tag_hit), s1_tag_hit), s1_clk_en)
   val s2_hit_way = OHToUInt(s2_tag_hit)
   val s2_scratchpad_word_addr = Cat(s2_hit_way, Mux(s2_slaveValid, s1s3_slaveAddr, io.s2_vaddr)(untagBits-1, log2Ceil(wordBits/8)), 0.U(log2Ceil(wordBits/8).W))
@@ -315,7 +315,7 @@ refill_cnt: An integer representing the current refill count.**/
   val s1_scratchpad_hit = Mux(s1_slaveValid, lineInScratchpad(scratchpadLine(s1s3_slaveAddr)), addrInScratchpad(io.s1_paddr))
   val s2_scratchpad_hit = RegEnable(s1_scratchpad_hit, s1_clk_en)
   val s2_report_uncorrectable_error = s2_scratchpad_hit && s2_data_decoded.uncorrectable && (s2_valid || (s2_slaveValid && !s1s2_full_word_write))
-  val s2_error_addr = scratchpadBase.map(base => Mux(s2_scratchpad_hit, base + s2_scratchpad_word_addr, 0.U)).getOrElse(0.U)
+  val s2_error_addr = scratchpadBase.map(base => Mux(s2_scratchpad_hit, base + s2_scratchpad_word_addr, 0.U)).getOrElse(0.U)**/
       require(tECC.isInstanceOf[IdentityCode])
       require(dECC.isInstanceOf[IdentityCode])
       require(outer.icacheParams.itimAddr.isEmpty)
@@ -341,7 +341,7 @@ refill_cnt: An integer representing the current refill count.**/
   tl_out.b.ready := true.B
   tl_out.c.valid := false.B
   tl_out.e.valid := false.B
-  assert(!(tl_out.a.valid && addrMaybeInScratchpad(tl_out.a.bits.address)))
+  assert(!(tl_out.a.valid))
   when (!refill_valid) { invalidated := false.B }
   when (refill_fire) { refill_valid := true.B }
   when (refill_done) { refill_valid := false.B}
@@ -358,7 +358,7 @@ refill_cnt: An integer representing the current refill count.**/
   def ccover(cond: Bool, label: String, desc: String)(implicit sourceInfo: SourceInfo) =
     property.cover(cond, s"ICACHE_$label", "MemorySystem;;" + desc)
   val mem_active_valid = Seq(property.CoverBoolean(s2_valid, Seq("mem_active")))
-  val data_error = Seq(
+  /**val data_error = Seq(
     property.CoverBoolean(!s2_data_decoded.correctable && !s2_data_decoded.uncorrectable, Seq("no_data_error")),
     property.CoverBoolean(s2_data_decoded.correctable, Seq("data_correctable_error")),
     property.CoverBoolean(s2_data_decoded.uncorrectable, Seq("data_uncorrectable_error")))
@@ -381,5 +381,5 @@ refill_cnt: An integer representing the current refill count.**/
       Seq("from_TL", "cache_mode")
     ),
     "MemorySystem;;Memory Bit Flip Cross Covers")
-  property.cover(error_cross_covers)
+  property.cover(error_cross_covers)**/
 }
