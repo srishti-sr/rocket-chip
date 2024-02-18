@@ -13,6 +13,13 @@ import freechips.rocketchip.util.property
 import chisel3.experimental.SourceInfo
 import chisel3.dontTouch
 import chisel3.util.random.LFSR
+/* PipeLine:
+  *   Stage 0 : access data and tag SRAM in parallel
+  *   Stage 1 : receive paddr from CPU
+  *             compare tag and paddr when the entry is valid
+  *             if hit : pick up the target instruction
+  *             if miss : start refilling in stage 2
+  *   Stage 2 : respond to CPU or start a refill}}}*/
 case class ICacheParams(
     nSets: Int = 64,
     nWays: Int = 4,
@@ -116,20 +123,30 @@ It influences the caching behavior.,Flag indicating if a miss should be cached i
 }
 class ICacheModule(outer: ICache) extends LazyModuleImp(outer)
     with HasL1ICacheParameters {
-  override val cacheParams = outer.icacheParams 
-  val io = IO(new ICacheBundle(outer))
-  val (tl_out, edge_out) = outer.masterNode.out(0)
-  val (tl_in, edge_in) = outer.slaveNode.in.headOption.unzip
+  override val cacheParams = outer.icacheParams //use the local parameters
+  val io = IO(new ICacheBundle(outer)) //IO between core and cache
+        
+  val (tl_out, edge_out) = outer.masterNode.out(0) /*Tile link port to memory,first ouput of the master node*/
+   /** TileLink port as ITIM memory.
+    * if [[outer.slaveNode]] is not connected [[outer.slaveNode.in]] will be empty.
+    *
+    * wes: Option.unzip does not exist :-(
+    */
+  val (tl_in, edge_in) = outer.slaveNode.in.headOption.unzip /**val (tl_in, edge_in) = outer.slaveNode.in.headOption.map(_.unzip).getOrElse((None, None))**/
+//how to deal with this,in absence of itim??
   //val tECC = cacheParams.tagCode
   //val dECC = cacheParams.dataCode
   require(isPow2(nSets) && isPow2(nWays))
   require(!usingVM || outer.icacheParams.itimAddr.isEmpty || pgIdxBits >= untagBits,
     s"When VM and ITIM are enabled, I$$ set size must not exceed ${1<<(pgIdxBits-10)} KiB; got ${(outer.size/nWays)>>10} KiB")
+  /** if this ICache can be used as ITIM, which hart it belongs to. */
+        
   val io_hartid = outer.hartIdSinkNodeOpt.map(_.bundle)
+  /** @todo tile Memory mapping I/O base address? */
   val io_mmio_address_prefix = outer.mmioAddressPrefixSinkNodeOpt.map(_.bundle)
-  /*val scratchpadOn = RegInit(false.B)                what to do with scartchpad?
-  val scratchpadMax = tl_in.map(tl => Reg(UInt(log2Ceil(nSets * (nWays - 1)).W)))
-  def lineInScratchpad(line: UInt) = scratchpadMax.map(scratchpadOn && line <= _).getOrElse(false.B)
+  val scratchpadOn = RegInit(false.B)//register indicates wheather ITIM is enabled.          //what to do with scartchpad?
+  val scratchpadMax = tl_in.map(tl => Reg(UInt(log2Ceil(nSets * (nWays - 1)).W)))  //a cut point to SRAM, indicates which SRAM will be used as SRAM or Cache.??
+  /*def lineInScratchpad(line: UInt) = scratchpadMax.map(scratchpadOn && line <= _).getOrElse(false.B)
   val scratchpadBase = outer.icacheParams.itimAddr.map { dummy =>
     p(LookupByHartId)(_.icache.flatMap(_.itimAddr.map(_.U)), io_hartid.get) | io_mmio_address_prefix.get
   }
@@ -137,49 +154,71 @@ class ICacheModule(outer: ICache) extends LazyModuleImp(outer)
   def addrInScratchpad(addr: UInt) = addrMaybeInScratchpad(addr) && lineInScratchpad(addr(untagBits+log2Ceil(nWays)-1, blockOffBits))
   def scratchpadWay(addr: UInt) = addr.extract(untagBits+log2Ceil(nWays)-1, untagBits)
   def scratchpadWayValid(way: UInt) = way < (nWays - 1).U
-  def scratchpadLine(addr: UInt) = addr(untagBits+log2Ceil(nWays)-1, blockOffBits)*/
+  def scratchpadLine(addr: UInt) = addr(untagBits+log2Ceil(nWays)-1, blockOffBits)
+*/
+ //scratchpad access valid in stage
   val s0_slaveValid = tl_in.map(_.a.fire).getOrElse(false.B)
   val s1_slaveValid = RegNext(s0_slaveValid, false.B)
   val s2_slaveValid = RegNext(s1_slaveValid, false.B)
   val s3_slaveValid = RegNext(false.B)
-  val s0_valid = io.req.fire
-  val s0_vaddr = io.req.bits.addr
-  val s1_valid = RegInit(false.B)
-  val s1_vaddr = RegEnable(s0_vaddr, s0_valid)
-  val s1_tag_hit = Wire(Vec(nWays, Bool()))
-  val s1_hit = s1_tag_hit.reduce(_||_) || Mux(s1_slaveValid, true.B, addrMaybeInScratchpad(io.s1_paddr))
+        
+  val s0_valid = io.req.fire //valid signal for CPU accessing cache in stage 0.
+  val s0_vaddr = io.req.bits.addr //virtual address from CPU in stage 0.
+  val s1_valid = RegInit(false.B)//valid signal for stage 1, drived by s0_valid.
+  val s1_vaddr = RegEnable(s0_vaddr, s0_valid)//virtual address from CPU in stage 1 only when s0 is valid
+  val s1_tag_hit = Wire(Vec(nWays, Bool()))/*tag hit vector to indicate hit which way, 
+  Each element of the vector corresponds to a specific way in the cache, and the vector as a whole is intended to indicate which ways have a tag hit.*/ 
+  val s1_hit = s1_tag_hit.reduce(_||_)
   dontTouch(s1_hit)
-  val s2_valid = RegNext(s1_valid && !io.s1_kill, false.B)
-  val s2_hit = RegNext(s1_hit)
-  val invalidated = Reg(Bool())
-  val refill_valid = RegInit(false.B)
-  val send_hint = RegInit(false.B)
-  val refill_fire = tl_out.a.fire && !send_hint
-  val hint_outstanding = RegInit(false.B)
-  val s2_miss = s2_valid && !s2_hit && !io.s2_kill
-  val s1_can_request_refill = !(s2_miss || refill_valid)
+ // effectively performs a logical OR operation on all the elements of the s1_tag_hit vector, resulting in a single Boolean value
+        
+ /*RegNext is a built-in function used to create a register that holds the value of a signal at the next clock cycle*/
+  val s2_valid = RegNext(s1_valid && !io.s1_kill, false.B) //s2_valid becomes true only if the data was valid in stage 1 and not killed by an external signal.
+  val s2_hit = RegNext(s1_hit)//hold same value from stage 1
+        
+  val invalidated = Reg(Bool())//flush the cache status register
+ /*RegInit is a function used to create a register with a specific initial value*/
+  val refill_valid = RegInit(false.B)//Indicates if a refill request is currently active
+  val send_hint = RegInit(false.B)// Indicates if a prefetch hint is being sent
+  val refill_fire = tl_out.a.fire && !send_hint //indicate [[tl_out]] is performing a refill. 
+  val hint_outstanding = RegInit(false.B)//Indicates if there's an outstanding prefetch hint
+  val s2_miss = s2_valid && !s2_hit && !io.s2_kill//[[io]] access L1 I$ miss. 
+  val s1_can_request_refill = !(s2_miss || refill_valid)//forward signal to stage 1, permit stage 1 refill
+  /** real refill signal, stage 2 miss, and was permit to refill in stage 1.
+    * Since a miss will trigger burst.
+    * miss under miss won't trigger another burst.
+    */
   val s2_request_refill = s2_miss && RegNext(s1_can_request_refill)
   val refill_paddr = RegEnable(io.s1_paddr, s1_valid && s1_can_request_refill)
   val refill_vaddr = RegEnable(s1_vaddr, s1_valid && s1_can_request_refill)
   val refill_tag = refill_paddr >> pgUntagBits
   val refill_idx = index(refill_vaddr, refill_paddr)
+ /** AccessAckData, is refilling I$, it will block request from CPU. */
   val refill_one_beat = tl_out.d.fire && edge_out.hasData(tl_out.d.bits)
-  io.req.ready := !(refill_one_beat || s0_slaveValid || s3_slaveValid)
+
+  io.req.ready := !(refill_one_beat)//block request from CPU when refill 
   s1_valid := s0_valid
+
   val (_, _, d_done, refill_cnt) = edge_out.count(tl_out.d)
-  val refill_done = refill_one_beat && d_done
-  tl_out.d.ready := !s3_slaveValid
+ /**The function returns a tuple of four values, out of which only two are captured:
+d_done: A boolean signal indicating whether the last data beat has been reached.
+refill_cnt: An integer representing the current refill count.**/
+  val refill_done = refill_one_beat && d_done //at last beat of `tl_out.d.fire`, finish refill.
   require (edge_out.manager.minLatency > 0)
+
+ /** way to be replaced, implemented with a hardcoded random replacement algorithm */
   val repl_way = if (isDM) 0.U else {
     val v0 = LFSR(16, refill_fire)(log2Up(nWays)-1,0)
     var v = v0
     for (i <- log2Ceil(nWays) - 1 to 0 by -1) {
       val mask = nWays - (BigInt(1) << (i + 1))
-      v = v | (lineInScratchpad(Cat(v0 | mask.U, refill_idx)) << i)
+      v = v | 1 << i)
     }
-    assert(!lineInScratchpad(Cat(v, refill_idx)))
     v
   }
+/**  Tag SRAM, indexed with virtual memory,
+ *   content with `refillError ## tag[19:0]` after ECC
+ * */
   val tag_array  = DescribedSRAM(
     name = "tag_array",
     desc = "ICache Tag Array",
@@ -187,7 +226,7 @@ class ICacheModule(outer: ICache) extends LazyModuleImp(outer)
     data = Vec(nWays, UInt(tECC.width(1 + tagBits).W))
   )
   val tag_rdata = tag_array.read(s0_vaddr(untagBits-1,blockOffBits), !refill_done && s0_valid)
-  val accruedRefillError = Reg(Bool())
+  /*val accruedRefillError = Reg(Bool())
   val refillError = tl_out.d.bits.corrupt || (refill_cnt > 0.U && accruedRefillError)
   when (refill_done) {
     val enc_tag = tECC.encode(Cat(refillError, refill_tag))
@@ -196,7 +235,7 @@ class ICacheModule(outer: ICache) extends LazyModuleImp(outer)
     ccover(refillError, "D_CORRUPT", "I$ D-channel corrupt")
   }
   io.errors.bus.valid := tl_out.d.fire && (tl_out.d.bits.denied || tl_out.d.bits.corrupt)
-  io.errors.bus.bits  := (refill_paddr >> blockOffBits) << blockOffBits
+  io.errors.bus.bits  := (refill_paddr >> blockOffBits) << blockOffBits*/
   val vb_array = RegInit(0.U((nSets*nWays).W))
   when (refill_one_beat) {
     accruedRefillError := refillError
