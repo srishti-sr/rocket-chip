@@ -351,10 +351,11 @@ refill_cnt: An integer representing the current refill count.**/
   io.perf.acquire := refill_fire
   io.keep_clock_enabled :=
     s1_valid || s2_valid || refill_valid || send_hint || hint_outstanding // I$
-  def index(vaddr: UInt, paddr: UInt) = {
-    val lsbs = paddr(pgUntagBits-1, blockOffBits)
-    val msbs = (idxBits+blockOffBits > pgUntagBits).option(vaddr(idxBits+blockOffBits-1, pgUntagBits))
-    msbs ## lsbs
+    
+  def index(vaddr: UInt, paddr: UInt) = { //VIPT
+    val lsbs = paddr(pgUntagBits-1, blockOffBits)//LSB using physical address
+    val msbs = (idxBits+blockOffBits > pgUntagBits).option(vaddr(idxBits+blockOffBits-1, pgUntagBits))//if not used returns none 
+    msbs ## lsbs //concatination to form the indexing bits
   }
   ccover(!send_hint && (tl_out.a.valid && !tl_out.a.ready), "MISS_A_STALL", "I$ miss blocked by A-channel")
   ccover(invalidate && refill_valid, "FLUSH_DURING_MISS", "I$ flushed during miss")
