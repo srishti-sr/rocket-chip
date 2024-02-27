@@ -21,8 +21,8 @@ import chisel3.util.random.LFSR
   *             if miss : start refilling in stage 2
   *   Stage 2 : respond to CPU or start a refill}}}*/
 case class ICacheParams(
-    nSets: Int = 64,
-    nWays: Int = 4,
+    nSets: Int = 128,
+    nWays: Int = 2,
     rowBits: Int = 128,
     nTLBSets: Int = 1,
     nTLBWays: Int = 32,
@@ -207,13 +207,9 @@ refill_cnt: An integer representing the current refill count.**/
   require (edge_out.manager.minLatency > 0)
 
  /** way to be replaced, implemented with a hardcoded random replacement algorithm */
-  val repl_way = if (isDM) 0.U else {
-    val v0 = LFSR(16, refill_fire)(log2Up(nWays)-1,0)
-    var v = v0
-    for (i <- log2Ceil(nWays) - 1 to 0 by -1) {
-      val mask = nWays - (BigInt(1) << (i + 1))
-      v = v | 1 << i
-    }
+ val repl_way = if (isDM) 0.U else {
+    // pick a way that is not used by the scratchpad
+    val v= LFSR(16, refill_fire)(log2Up(nWays)-1,0)
     v
   }
 /**  Tag SRAM, indexed with virtual memory,
