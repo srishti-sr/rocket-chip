@@ -44,6 +44,11 @@ trait HasL1ICacheParameters extends HasL1CacheParameters with HasCoreParameters 
 class ICacheReq(implicit p: Parameters) extends CoreBundle()(p) with HasL1ICacheParameters {
   val addr = UInt(vaddrBits.W)             //addressbits
 }
+class ICacheErrors(implicit p: Parameters) extends CoreBundle()(p)
+    with HasL1ICacheParameters
+    with CanHaveErrors {
+  val bus = Valid(UInt(paddrBits.W))
+}
 
 class ICache(val icacheParams: ICacheParams, val staticIdForMetadataUseOnly: Int)(implicit p: Parameters) extends LazyModule {
   lazy val module = new ICacheModule(this)//use later
@@ -115,7 +120,7 @@ It influences the caching behavior.,Flag indicating if a miss should be cached i
   val s2_prefetch = Input(Bool()) // should I$ prefetch next line on a miss?
   val resp = Valid(new ICacheResp(outer))
   val invalidate = Input(Bool()) //flush l1 cache of cpu
-  //val errors = new ICacheErrors
+  val errors = new ICacheErrors
   val perf = Output(new ICachePerfEvents())//performance counting??
   val clock_enabled = Input(Bool())  /** enable clock. */
   /** I$ miss or ITIM access will still enable clock even [[ICache]] is asked to be gated. */
@@ -222,31 +227,50 @@ refill_cnt: An integer representing the current refill count.**/
     data = Vec(nWays, UInt((tagBits).W))//changed
   )
   val tag_rdata = tag_array.read(s0_vaddr(untagBits-1,blockOffBits), !refill_done && s0_valid)
-  /*val accruedRefillError = Reg(Bool())
+     /**Read the tag array for the virtual index bits when no refill is being performed and s0 is valis */
+  val accruedRefillError = Reg(Bool())
   val refillError = tl_out.d.bits.corrupt || (refill_cnt > 0.U && accruedRefillError)
   when (refill_done) {
-    val enc_tag = tECC.encode(Cat(refillError, refill_tag))
-    tag_array.write(refill_idx, VecInit(Seq.fill(nWays){enc_tag}), Seq.tabulate(nWays)(repl_way === _.U))
-
+    tag_array.write(refill_idx, VecInit(Seq.fill(nWays){refill_tag}), Seq.tabulate(nWays)(repl_way === _.U))
+   /**Writing into the tag array the accessed data*/
     ccover(refillError, "D_CORRUPT", "I$ D-channel corrupt")
+   /**Displaying the data has been corrupted*/
   }
+  /**notify CPU, I$ has corrupt.*/
   io.errors.bus.valid := tl_out.d.fire && (tl_out.d.bits.denied || tl_out.d.bits.corrupt)
-  io.errors.bus.bits  := (refill_paddr >> blockOffBits) << blockOffBits*/
+  io.errors.bus.bits  := (refill_paddr >> blockOffBits) << blockOffBits
+  /**This operation likely provides the memory block number (excluding the offset)
+     to the CPU as part of the error information. This helps the CPU identify the specific memory block associated with the potential ICache corruption.*/
+  
   val vb_array = RegInit(0.U((nSets*nWays).W))
-  when (refill_one_beat) {
+  /** true indicate this cacheline is valid,
+    * indexed by (wayIndex ## setIndex)
+    * after refill_done and not FENCE.I, (repl_way ## refill_idx) set to true.
+    */
+  when (refill_one_beat) {     /**when AccessAckData, is refilling I$*/
     accruedRefillError := refillError
     vb_array := vb_array.bitSet(Cat(repl_way, refill_idx), refill_done && !invalidated)
   }
+   /** flush cache when invalidate is true. */
   val invalidate = WireDefault(io.invalidate)
   when (invalidate) {
     vb_array := 0.U
     invalidated := true.B
   }
-  //val s1_tag_disparity = Wire(Vec(nWays, Bool()))
-  //val s1_tl_error = Wire(Vec(nWays, Bool()))
+  val s1_tag_disparity = Wire(Vec(nWays, Bool()))/**True: Potentially correctable error (e.g., single-bit error).
+False: Uncorrectable error (e.g., multiple-bit error).
+Triggers actions for correctable errors:
+CPU replay of instruction fetch.
+ICache line invalidation.*/
+  val s1_tl_error = Wire(Vec(nWays, Bool()))/**Signals uncorrectable errors on the ICache transaction bus:
+True: Uncorrectable error detected.
+False: No error detected.
+Triggers error signaling to CPU and potentially other components:
+Sets error bit (io.resp.bits.ae) in ICache response.
+Signals error cause (Causes.fetch_access).*/
      
-  val wordBits = outer.icacheParams.fetchBytes*8
-  val s1_dout = Wire(Vec(nWays, UInt(wordBits).W)))
+  val wordBits = outer.icacheParams.fetchBytes*8/**how many bits will be fetched by CPU for each fetch.*/
+  val s1_dout = Wire(Vec(nWays, UInt(wordBits).W))) /** a set of raw data read from [[data_arrays]]. */
   s1_dout := DontCare
      
   val s0_slaveAddr = tl_in.map(_.a.bits.address).getOrElse(0.U)
@@ -255,20 +279,21 @@ refill_cnt: An integer representing the current refill count.**/
   for (i <- 0 until nWays) {
     val s1_idx = index(s1_vaddr, io.s1_paddr)
     val s1_tag = io.s1_paddr >> pgUntagBits
-    /**val scratchpadHit = scratchpadWayValid(i.U) &&
+    val scratchpadHit = scratchpadWayValid(i.U) &&
       Mux(s1_slaveValid,
         lineInScratchpad(scratchpadLine(s1s3_slaveAddr)) && scratchpadWay(s1s3_slaveAddr) === i.U,
-        addrInScratchpad(io.s1_paddr) && scratchpadWay(io.s1_paddr) === i.U)**/
+        addrInScratchpad(io.s1_paddr) && scratchpadWay(io.s1_paddr) === i.U)
     val s1_vb = vb_array(Cat(i.U, s1_idx))
-    /**val enc_tag = tECC.decode(tag_rdata(i))
-    val (tl_error, tag) = Split(enc_tag.uncorrected, tagBits)**/
+    val enc_tag = tECC.decode(tag_rdata(i))
+    val (tl_error, tag) = Split(enc_tag.uncorrected, tagBits)
     val tagMatch = s1_vb && tag === s1_tag
-    /**s1_tag_disparity(i) := s1_vb && enc_tag.error
-    s1_tl_error(i) := tagMatch && tl_error.asBool?**/
+    1_tag_disparity(i) := s1_vb && enc_tag.error
+    s1_tl_error(i) := tagMatch && tl_error.asBool?
     s1_tag_hit(i) := tagMatch
   }
   assert(!(s1_valid || s1_slaveValid) || PopCount(s1_tag_hit zip s1_tag_disparity map { case (h, d) => h && !d }) <= 1.U)//work on popcount
   require(tl_out.d.bits.data.getWidth % wordBits == 0)
+
     /**Data SRAM**/
   val data_arrays = Seq.tabulate(tl_out.d.bits.data.getWidth / wordBits) {
     i =>
@@ -341,4 +366,32 @@ refill_cnt: An integer representing the current refill count.**/
   def ccover(cond: Bool, label: String, desc: String)(implicit sourceInfo: SourceInfo) =
     property.cover(cond, s"ICACHE_$label", "MemorySystem;;" + desc)
   val mem_active_valid = Seq(property.CoverBoolean(s2_valid, Seq("mem_active")))
-  
+ val data_error = Seq(
+    property.CoverBoolean(!s2_data_decoded.correctable && !s2_data_decoded.uncorrectable, Seq("no_data_error")),
+    property.CoverBoolean(s2_data_decoded.correctable, Seq("data_correctable_error")),
+    property.CoverBoolean(s2_data_decoded.uncorrectable, Seq("data_uncorrectable_error")))
+  val request_source = Seq(
+    property.CoverBoolean(!s2_slaveValid, Seq("from_CPU")),
+    property.CoverBoolean(s2_slaveValid, Seq("from_TL"))
+  )
+  val tag_error = Seq(
+    property.CoverBoolean(!s2_tag_disparity, Seq("no_tag_error")),
+    property.CoverBoolean(s2_tag_disparity, Seq("tag_error"))
+  )
+  val mem_mode = Seq(
+    property.CoverBoolean(s2_scratchpad_hit, Seq("ITIM_mode")),
+    property.CoverBoolean(!s2_scratchpad_hit, Seq("cache_mode"))
+  )
+
+  val error_cross_covers = new property.CrossProperty(
+    Seq(mem_active_valid, data_error, tag_error, request_source, mem_mode),
+    Seq(
+      // tag error cannot occur in ITIM mode
+      Seq("tag_error", "ITIM_mode"),
+      // Can only respond to TL in ITIM mode
+      Seq("from_TL", "cache_mode")
+    ),
+    "MemorySystem;;Memory Bit Flip Cross Covers")
+
+  property.cover(error_cross_covers)
+}
