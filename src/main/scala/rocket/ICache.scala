@@ -299,23 +299,6 @@ refill_cnt: An integer representing the current refill count.**/
       s1_dout := dout
     }
   }
-  /**val s1s2_full_word_write = WireDefault(false.B)
-  val s1_dont_read = s1_slaveValid && s1s2_full_word_write
-  val s1_clk_en = s1_valid
-  val s2_tag_hit = RegEnable(Mux(s1_dont_read, 0.U.asTypeOf(s1_tag_hit), s1_tag_hit), s1_clk_en)
-  val s2_hit_way = OHToUInt(s2_tag_hit)
-  val s2_scratchpad_word_addr = Cat(s2_hit_way, Mux(s2_slaveValid, s1s3_slaveAddr, io.s2_vaddr)(untagBits-1, log2Ceil(wordBits/8)), 0.U(log2Ceil(wordBits/8).W))
-  val s2_dout = RegEnable(s1_dout, s1_clk_en)
-  val s2_way_mux = Mux1H(s2_tag_hit, s2_dout)
-  val s2_tag_disparity = RegEnable(s1_tag_disparity, s1_clk_en).asUInt.orR
-  val s2_tl_error = RegEnable(s1_tl_error.asUInt.orR, s1_clk_en)
-  val s2_data_decoded = dECC.decode(s2_way_mux)
-  val s2_disparity = s2_tag_disparity || s2_data_decoded.error
-  val s1_scratchpad_hit = Mux(s1_slaveValid, lineInScratchpad(scratchpadLine(s1s3_slaveAddr)), addrInScratchpad(io.s1_paddr))
-  val s2_scratchpad_hit = RegEnable(s1_scratchpad_hit, s1_clk_en)
-  val s2_report_uncorrectable_error = s2_scratchpad_hit && s2_data_decoded.uncorrectable && (s2_valid || (s2_slaveValid && !s1s2_full_word_write))
-  val s2_error_addr = scratchpadBase.map(base => Mux(s2_scratchpad_hit, base + s2_scratchpad_word_addr, 0.U)).getOrElse(0.U)**/
-      require(tECC.isInstanceOf[IdentityCode])
       require(dECC.isInstanceOf[IdentityCode])
       require(outer.icacheParams.itimAddr.isEmpty)
       io.resp.bits.data := Mux1H(s1_tag_hit, s1_dout)
@@ -358,28 +341,4 @@ refill_cnt: An integer representing the current refill count.**/
   def ccover(cond: Bool, label: String, desc: String)(implicit sourceInfo: SourceInfo) =
     property.cover(cond, s"ICACHE_$label", "MemorySystem;;" + desc)
   val mem_active_valid = Seq(property.CoverBoolean(s2_valid, Seq("mem_active")))
-  /**val data_error = Seq(
-    property.CoverBoolean(!s2_data_decoded.correctable && !s2_data_decoded.uncorrectable, Seq("no_data_error")),
-    property.CoverBoolean(s2_data_decoded.correctable, Seq("data_correctable_error")),
-    property.CoverBoolean(s2_data_decoded.uncorrectable, Seq("data_uncorrectable_error")))
-  val request_source = Seq(
-    property.CoverBoolean(!s2_slaveValid, Seq("from_CPU")),
-    property.CoverBoolean(s2_slaveValid, Seq("from_TL"))
-  )
-  val tag_error = Seq(
-    property.CoverBoolean(!s2_tag_disparity, Seq("no_tag_error")),
-    property.CoverBoolean(s2_tag_disparity, Seq("tag_error"))
-  )
-  val mem_mode = Seq(
-    property.CoverBoolean(s2_scratchpad_hit, Seq("ITIM_mode")),
-    property.CoverBoolean(!s2_scratchpad_hit, Seq("cache_mode"))
-  )
-  val error_cross_covers = new property.CrossProperty(
-    Seq(mem_active_valid, data_error, tag_error, request_source, mem_mode),
-    Seq(
-      Seq("tag_error", "ITIM_mode"),
-      Seq("from_TL", "cache_mode")
-    ),
-    "MemorySystem;;Memory Bit Flip Cross Covers")
-  property.cover(error_cross_covers)**/
-}
+  
