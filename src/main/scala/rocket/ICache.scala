@@ -273,28 +273,26 @@ Signals error cause (Causes.fetch_access).*/
   val s1_dout = Wire(Vec(nWays, UInt(wordBits).W))) /** a set of raw data read from [[data_arrays]]. */
   s1_dout := DontCare
      
-  val s0_slaveAddr = tl_in.map(_.a.bits.address).getOrElse(0.U)
-  val s1s3_slaveAddr = Reg(UInt(log2Ceil(outer.size).W))
-  val s1s3_slaveData = Reg(UInt(wordBits.W))
+ /**Hit logic*/
   for (i <- 0 until nWays) {
-    val s1_idx = index(s1_vaddr, io.s1_paddr)
-    val s1_tag = io.s1_paddr >> pgUntagBits
-    val scratchpadHit = scratchpadWayValid(i.U) &&
-      Mux(s1_slaveValid,
-        lineInScratchpad(scratchpadLine(s1s3_slaveAddr)) && scratchpadWay(s1s3_slaveAddr) === i.U,
-        addrInScratchpad(io.s1_paddr) && scratchpadWay(io.s1_paddr) === i.U)
+    val s1_idx = index(s1_vaddr, io.s1_paddr)/**Indexing bits for the set*/
+    val s1_tag = io.s1_paddr >> pgUntagBits/**Required tag bits*/
     val s1_vb = vb_array(Cat(i.U, s1_idx))
-    val enc_tag = tECC.decode(tag_rdata(i))
-    val (tl_error, tag) = Split(enc_tag.uncorrected, tagBits)
+    val tag = tag_rdata(i)
     val tagMatch = s1_vb && tag === s1_tag
-    1_tag_disparity(i) := s1_vb && enc_tag.error
-    s1_tl_error(i) := tagMatch && tl_error.asBool?
+    s1_tag_disparity(i) := False
+    s1_tl_error(i) := False
     s1_tag_hit(i) := tagMatch
   }
   assert(!(s1_valid || s1_slaveValid) || PopCount(s1_tag_hit zip s1_tag_disparity map { case (h, d) => h && !d }) <= 1.U)//work on popcount
+  /**If the cache is not valid, and there are no correctable tag errors, the assertion is satisfied.
+One tag hit with correctable error: If there is exactly one tag hit, and it has a correctable error (detectable by ECC but correctable), the assertion is satisfied.*/
   require(tl_out.d.bits.data.getWidth % wordBits == 0)
-
-    /**Data SRAM**/
+/** Ensures that the width of the data field in 
+     the output signal tl_out.d.bits.data is a multiple of the word size (wordBits)*/
+    
+     
+     /**Data SRAM**/
   val data_arrays = Seq.tabulate(tl_out.d.bits.data.getWidth / wordBits) {
     i =>
       DescribedSRAM(
