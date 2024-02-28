@@ -299,9 +299,10 @@ One tag hit with correctable error: If there is exactly one tag hit, and it has 
         name = s"data_arrays_${i}",
         desc = "ICache Data Array",
         size = nSets * refillCycles,
-        data = Vec(nWays, UInt(dECC.width(wordBits).W))
+        data = Vec(nWays, UInt(wordBits.W))
       )
   }
+     \
   for ((data_array , i) <- data_arrays.zipWithIndex) {
     def wordMatch(addr: UInt) = addr.extract(log2Ceil(tl_out.d.bits.data.getWidth/8)-1, log2Ceil(wordBits/8)) === i.U
     def row(addr: UInt) = addr(untagBits-1, blockOffBits-log2Ceil(refillCycles))
