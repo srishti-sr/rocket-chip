@@ -47,6 +47,9 @@ class ICacheReq(implicit p: Parameters) extends CoreBundle()(p) with HasL1ICache
 class ICacheErrors(implicit p: Parameters) extends CoreBundle()(p)
     with HasL1ICacheParameters
     with CanHaveErrors {
+  val correctable = (cacheParams.tagCode.canDetect || cacheParams.dataCode.canDetect).option(Valid(UInt(paddrBits.W)))
+  val uncorrectable = (cacheParams.itimAddr.nonEmpty && cacheParams.dataCode.canDetect).option(Valid(UInt(paddrBits.W)))
+  
   val bus = Valid(UInt(paddrBits.W))
 }
 
@@ -101,7 +104,7 @@ class ICache(val icacheParams: ICacheParams, val staticIdForMetadataUseOnly: Int
 }
 class ICacheResp(outer: ICache) extends Bundle {
   val data = UInt((outer.icacheParams.fetchBytes*8).W) //data to CPU
-  val replay = False //used in case of tag error original Bool()
+  val replay = Bool() //used in case of tag error original Bool()
   val ae = Bool() //use??
 }
 class ICachePerfEvents extends Bundle { //performance counting
@@ -293,48 +296,80 @@ One tag hit with correctable error: If there is exactly one tag hit, and it has 
     
      
      /**Data SRAM**/
-  val data_arrays = Seq.tabulate(tl_out.d.bits.data.getWidth / wordBits) {
+  val data_arrays = Seq.tabulate(tl_out.d.bits.data.getWidth / wordBits) {/**Create number of banks as the number of words on the tile link*/
     i =>
       DescribedSRAM(
         name = s"data_arrays_${i}",
         desc = "ICache Data Array",
-        size = nSets * refillCycles,
+        size = nSets * refillCycles,/**why??*/
         data = Vec(nWays, UInt(wordBits.W))
       )
   }
-     \
-  for ((data_array , i) <- data_arrays.zipWithIndex) {
-    def wordMatch(addr: UInt) = addr.extract(log2Ceil(tl_out.d.bits.data.getWidth/8)-1, log2Ceil(wordBits/8)) === i.U
-    def row(addr: UInt) = addr(untagBits-1, blockOffBits-log2Ceil(refillCycles))
-    val s0_ren = (s0_valid && wordMatch(s0_vaddr)) || (s0_slaveValid && wordMatch(s0_slaveAddr))
-    val wen = (refill_one_beat && !invalidated) || (s3_slaveValid && wordMatch(s1s3_slaveAddr))
+    
+  for ((data_array , i) <- data_arrays.zipWithIndex) {/**Iterate over the banks*/
+    def wordMatch(addr: UInt) = addr.extract(log2Ceil(tl_out.d.bits.data.getWidth/8)-1, log2Ceil(wordBits/8)) === i.U/**Extracting the bits of vaddr for bank address check for match with the current bank*/
+    def row(addr: UInt) = addr(untagBits-1, blockOffBits-log2Ceil(refillCycles))/**rowbits to select a row*/
+    val s0_ren = s0_valid && wordMatch(s0_vaddr) /**Read the data if not 0*/
+    val wen = (refill_one_beat && !invalidated) /** write_enable signal refill from [[tl_out]]  */
     val mem_idx =
-      Mux(refill_one_beat, (refill_idx << log2Ceil(refillCycles)) | refill_cnt,
-                  Mux(s3_slaveValid, row(s1s3_slaveAddr),
-                  Mux(s0_slaveValid, row(s0_slaveAddr),
-                  row(s0_vaddr))))
-    when (wen) {
-      val data = Mux(s3_slaveValid, s1s3_slaveData, tl_out.d.bits.data(wordBits*(i+1)-1, wordBits*i))
-      val way = Mux(s3_slaveValid, scratchpadWay(s1s3_slaveAddr), repl_way)
-      data_array.write(mem_idx, VecInit(Seq.fill(nWays){dECC.encode(data)}), (0 until nWays).map(way === _.U))
+      Mux(refill_one_beat, (refill_idx << log2Ceil(refillCycles)) | refill_cnt, /**when refilling ?*/
+                  row(s0_vaddr))
+    when (wen) { /**writing*/
+      val data =tl_out.d.bits.data(wordBits*(i+1)-1, wordBits*i))/**required data word*/
+      val way = repl_way
+      data_array.write(mem_idx, VecInit(Seq.fill(nWays){data}), (0 until nWays).map(way === _.U))
     }
-    val dout = data_array.read(mem_idx, !wen && s0_ren)
-    when (wordMatch(Mux(s1_slaveValid, s1s3_slaveAddr, io.s1_paddr))) {
+    val dout = data_array.read(mem_idx, !wen && s0_ren)/**read data from the roe*/
+    when (wordMatch(io.s1_paddr))) {/**selecting a way why using paddr?*/
       s1_dout := dout
     }
   }
+  val s1_clk_en = s1_valid
+  val s2_tag_hit = RegEnable(s1_tag_hit, s1_clk_en)
+  /** way index to access [[data_arrays]]. */
+  val s2_hit_way = OHToUInt(s2_tag_hit)
+  val s2_dout = RegEnable(s1_dout, s1_clk_en)
+  val s2_way_mux = Mux1H(s2_tag_hit, s2_dout)
+  val s2_tag_disparity = RegEnable(s1_tag_disparity, s1_clk_en).asUInt.orR
+  val s2_tl_error = RegEnable(s1_tl_error.asUInt.orR, s1_clk_en)
+  /** ECC decode result for [[data_arrays]]. */
+  val s2_data_decoded =s2_way_mux
+  /** ECC error happened, correctable or uncorrectable, ask CPU to replay. */
+  val s2_disparity = s2_tag_disparity 
+  val s2_data_decoded.correctable
+  // output signals
+  outer.icacheParams.latency match {
+    // if I$ latency is 1, no ITIM, no ECC.
+    case 1 =>
+      require(tECC.isInstanceOf[IdentityCode])
       require(dECC.isInstanceOf[IdentityCode])
       require(outer.icacheParams.itimAddr.isEmpty)
+      // reply data to CPU at stage 2. no replay.
       io.resp.bits.data := Mux1H(s1_tag_hit, s1_dout)
-      //io.resp.bits.ae := s1_tl_error.asUInt.orR
+      io.resp.bits.ae := s1_tl_error.asUInt.orR
       io.resp.valid := s1_valid && s1_hit
       io.resp.bits.replay := false.B
-  tl_out.a.valid := s2_request_refill
-  tl_out.a.bits := edge_out.Get(
+
+    // if I$ latency is 2, can have ITIM and ECC.
+    case 2 =>
+      // when some sort of memory bit error have occurred
+      // @todo why so aggressive to invalidate all when ecc corrupted.
+      when (s2_valid && s2_disparity) { invalidate := true.B }
+
+      // reply data to CPU at stage 2.
+      io.resp.bits.data := s2_data_decoded
+      io.resp.bits.ae := s2_tl_error
+io.resp.bits.replay := s2_disparity
+      io.resp.valid := s2_valid && s2_hit
+  }
+     tl_out.a.valid := s2_request_refill/**request for refill*/
+     tl_out.a.bits := edge_out.Get(   /**Constructs the TileLink request with specific address and size information for refilling the cache block.*/
                     fromSource = 0.U,
                     toAddress = (refill_paddr >> blockOffBits) << blockOffBits,
                     lgSize = lgCacheBlockBytes.U)._2
-  
+
+/**prefetch optional removed*/
+  // Drive APROT information
   tl_out.a.bits.user.lift(AMBAProt).foreach { x =>
     x.fetch       := true.B
     x.secure      := true.B
@@ -353,7 +388,7 @@ One tag hit with correctable error: If there is exactly one tag hit, and it has 
   when (refill_done) { refill_valid := false.B}
   io.perf.acquire := refill_fire
   io.keep_clock_enabled :=
-    s1_valid || s2_valid || refill_valid || send_hint || hint_outstanding // I$
+    s1_valid || s2_valid || refill_valid // I$
     
   def index(vaddr: UInt, paddr: UInt) = { //VIPT
     val lsbs = paddr(pgUntagBits-1, blockOffBits)//LSB using physical address
@@ -362,8 +397,11 @@ One tag hit with correctable error: If there is exactly one tag hit, and it has 
   }
   ccover(!send_hint && (tl_out.a.valid && !tl_out.a.ready), "MISS_A_STALL", "I$ miss blocked by A-channel")
   ccover(invalidate && refill_valid, "FLUSH_DURING_MISS", "I$ flushed during miss")
+
+ 
   def ccover(cond: Bool, label: String, desc: String)(implicit sourceInfo: SourceInfo) =
     property.cover(cond, s"ICACHE_$label", "MemorySystem;;" + desc)
+   /**Cover points are specific conditions or events within the design that are deemed important to verify.*/
   val mem_active_valid = Seq(property.CoverBoolean(s2_valid, Seq("mem_active")))
  val data_error = Seq(
     property.CoverBoolean(!s2_data_decoded.correctable && !s2_data_decoded.uncorrectable, Seq("no_data_error")),
@@ -393,4 +431,4 @@ One tag hit with correctable error: If there is exactly one tag hit, and it has 
     "MemorySystem;;Memory Bit Flip Cross Covers")
 
   property.cover(error_cross_covers)
-}
+    }
