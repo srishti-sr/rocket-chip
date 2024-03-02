@@ -22,12 +22,8 @@ trait CoreParams {
   val useAtomics: Boolean
   val useAtomicsOnlyForIO: Boolean
   val useCompressed: Boolean
-  val useBitManip: Boolean
-  val useBitManipCrypto: Boolean
   val useVector: Boolean = false
-  val useSCIE: Boolean
-  val useCryptoNIST: Boolean
-  val useCryptoSM: Boolean
+  val vectorUseDCache: Boolean = false
   val useRVE: Boolean
   val useConditionalZero: Boolean
   val mulDiv: Option[MulDivParams]
@@ -60,7 +56,6 @@ trait CoreParams {
   def customCSRs(implicit p: Parameters): CustomCSRs = new CustomCSRs
 
   def hasSupervisorMode: Boolean = useSupervisor || useVM
-  def hasBitManipCrypto: Boolean = useBitManipCrypto || useCryptoNIST || useCryptoSM
   def instBytes: Int = instBits / 8
   def fetchBytes: Int = fetchWidth * instBytes
   def lrscCycles: Int
@@ -86,12 +81,7 @@ trait HasCoreParameters extends HasTileParameters {
   val usingAtomicsOnlyForIO = coreParams.useAtomicsOnlyForIO
   val usingAtomicsInCache = usingAtomics && !usingAtomicsOnlyForIO
   val usingCompressed = coreParams.useCompressed
-  val usingBitManip = coreParams.useBitManip
-  val usingBitManipCrypto = coreParams.hasBitManipCrypto
   val usingVector = coreParams.useVector
-  val usingSCIE = coreParams.useSCIE
-  val usingCryptoNIST = coreParams.useCryptoNIST
-  val usingCryptoSM = coreParams.useCryptoSM
   val usingNMI = coreParams.useNMI
   val usingConditionalZero = coreParams.useConditionalZero
 
@@ -124,7 +114,6 @@ trait HasCoreParameters extends HasTileParameters {
   if (usingVector) {
     require(isPow2(vLen), s"vLen ($vLen) must be a power of 2")
     require(eLen >= 32 && vLen % eLen == 0, s"eLen must divide vLen ($vLen) and be no less than 32")
-    require(vMemDataBits >= eLen && vLen % vMemDataBits == 0, s"vMemDataBits ($vMemDataBits) must divide vLen ($vLen) and be no less than eLen ($eLen)")
   }
 
   lazy val hartIdLen: Int = p(MaxHartIdBits)
