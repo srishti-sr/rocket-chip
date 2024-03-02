@@ -105,7 +105,7 @@ class ICache(val icacheParams: ICacheParams, val staticIdForMetadataUseOnly: Int
 class ICacheResp(outer: ICache) extends Bundle {
   val data = UInt((outer.icacheParams.fetchBytes*8).W) //data to CPU
   val replay = Bool() //used in case of tag error original Bool()
-  val ae = Bool() //use??
+  val ae = false //access exception ,latency 1 no ecc and itim
 }
 class ICachePerfEvents extends Bundle { //performance counting
   val acquire = Bool() //cache aquires a cache line
