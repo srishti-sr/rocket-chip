@@ -21,8 +21,8 @@ import chisel3.util.random.LFSR
   *             if miss : start refilling in stage 2
   *   Stage 2 : respond to CPU or start a refill}}}*/
 case class ICacheParams(
-    nSets: Int = 128,
-    nWays: Int = 2,
+    nSets: Int = 64,
+    nWays: Int = 4,
     rowBits: Int = 128,
     nTLBSets: Int = 1,
     nTLBWays: Int = 32,
