@@ -345,7 +345,7 @@ One tag hit with correctable error: If there is exactly one tag hit, and it has 
       require(dECC.isInstanceOf[IdentityCode])
       require(outer.icacheParams.itimAddr.isEmpty)
       // reply data to CPU at stage 2. no replay.
-      io.resp.bits.data := Mux1H(s1_tag_hit, s1_dout)
+      io.resp.bits.data := Mux1H(s1_tag_hit, s1_dout) /*1to 1` multiplexer*/
       io.resp.bits.ae := s1_tl_error.asUInt.orR
       io.resp.valid := s1_valid && s1_hit
       io.resp.bits.replay := false.B
