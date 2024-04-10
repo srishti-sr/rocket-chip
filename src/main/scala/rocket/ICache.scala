@@ -21,9 +21,9 @@ import chisel3.util.random.LFSR
   *             if miss : start refilling in stage 2
   *   Stage 2 : respond to CPU or start a refill}}}*/
 case class ICacheParams(
-    nSets: Int = 64,
-    nWays: Int = 4,
-    rowBits: Int = 128,
+    nSets: Int = 64,//change
+    nWays: Int = 4,//change
+    rowBits: Int = 128,//*
     nTLBSets: Int = 1,
     nTLBWays: Int = 32,
     nTLBBasePageSectors: Int = 4,
@@ -33,7 +33,7 @@ case class ICacheParams(
     dataECC: Option[String] = None,
     itimAddr: Option[BigInt] = None,
     prefetch: Boolean = false,
-    blockBytes: Int = 64,
+    blockBytes: Int = 64,//change
     latency: Int = 1,
     fetchBytes: Int = 4) extends L1CacheParams {
   def replacement = new RandomReplacement(nWays)
@@ -56,9 +56,9 @@ class ICacheErrors(implicit p: Parameters) extends CoreBundle()(p)
 class ICache(val icacheParams: ICacheParams, val staticIdForMetadataUseOnly: Int)(implicit p: Parameters) extends LazyModule {
   lazy val module = new ICacheModule(this)//use later
     /** Diplomatic hartid bundle used for ITIM.  */
-  val hartIdSinkNodeOpt = icacheParams.itimAddr.map(_ => BundleBridgeSink[UInt]()) //why??
+  val hartIdSinkNodeOpt = icacheParams.itimAddr.map(_ => BundleBridgeSink[UInt]()) //why??replacement
   /** @todo base address offset for ITIM? */
-  val mmioAddressPrefixSinkNodeOpt = icacheParams.itimAddr.map(_ => BundleBridgeSink[UInt]()) //why??
+  val mmioAddressPrefixSinkNodeOpt = icacheParams.itimAddr.map(_ => BundleBridgeSink[UInt]()) //why??replacement
 
   val useVM = p(TileKey).core.useVM   //use of virtual memory
     
